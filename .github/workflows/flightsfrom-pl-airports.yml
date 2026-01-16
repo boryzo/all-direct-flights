@@ -1,0 +1,44 @@
+name: flightsfrom - polish airports to CSV
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 3 * * *"  # codziennie 03:15 UTC (04:15 w PL zimą)
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Scrape airports -> CSV
+        env:
+          AIRPORTS: "GDN,WAW,KRK,KTW,WRO,POZ,SZZ,LUZ,RZE,IEG,LCJ,BZG,OLS"  # dostosuj listę
+        run: |
+          rm -rf out
+          python scripts/flightsfrom_scrape.py --airports "${AIRPORTS}" --out-dir out
+          ls -la out
+
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flightsfrom-pl-airports-csv
+          path: out/
+          if-no-files-found: error
