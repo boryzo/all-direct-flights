@@ -2,8 +2,8 @@ name: flightsfrom - polish airports to CSV
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "15 3 * * *"  # codziennie 03:15 UTC (04:15 w PL zimą)
+  # schedule:
+  #   - cron: "15 3 * * *"  # codziennie 03:15 UTC (04:15 w PL zimą)
 
 jobs:
   scrape:
