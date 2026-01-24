@@ -22,9 +22,9 @@ UA = (
     "Chrome/121.0.0.0 Safari/537.36"
 )
 
-WAIT_MS = 12000
-CLOUDFLARE_RETRIES = 4
-CLOUDFLARE_WAIT_MS = 1000
+WAIT_MS = 25000
+CLOUDFLARE_RETRIES = 6
+CLOUDFLARE_WAIT_MS = 2000
 WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 WEEKDAY_FROM_DAY_FLAGS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 WEEKDAY_TO_NUMBER = {"Mon": 1, "Tue": 2, "Wed": 3, "Thu": 4, "Fri": 5, "Sat": 6, "Sun": 7}
