@@ -50,6 +50,10 @@ def wait_for_route_list(page, airport: str) -> None:
             last_exc = exc
             if not is_cloudflare_challenge(page):
                 raise
+            print(
+                f"[WARN] {airport}: Cloudflare challenge detected, retrying...",
+                file=sys.stderr,
+            )
             attempts += 1
             page.wait_for_timeout(CLOUDFLARE_WAIT_MS)
     if last_exc:
