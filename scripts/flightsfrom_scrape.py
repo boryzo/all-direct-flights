@@ -22,9 +22,9 @@ UA = (
     "Chrome/121.0.0.0 Safari/537.36"
 )
 
-WAIT_MS = 25000
-CLOUDFLARE_RETRIES = 6
-CLOUDFLARE_WAIT_MS = 2000
+WAIT_MS = 12000
+CLOUDFLARE_RETRIES = 4
+CLOUDFLARE_WAIT_MS = 1000
 WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 WEEKDAY_FROM_DAY_FLAGS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 WEEKDAY_TO_NUMBER = {"Mon": 1, "Tue": 2, "Wed": 3, "Thu": 4, "Fri": 5, "Sat": 6, "Sun": 7}
@@ -137,7 +137,6 @@ class Row:
     origin_iata: str
     destination_iata: str
     destination_country_iso2: str
-    destination_airport_name: str
 
     airline_name: str
     airline_iata: str
@@ -343,7 +342,6 @@ def rows_from_all_destinations(data: list, origin: str) -> List[Row]:
                     origin_iata=origin,
                     destination_iata=dest_iata,
                     destination_country_iso2=country_iso2,
-                    destination_airport_name=airport_name,
                     airline_name="",
                     airline_iata="",
                     flights_per_day_min=fpd_min,
@@ -373,7 +371,6 @@ def rows_from_all_destinations(data: list, origin: str) -> List[Row]:
                     origin_iata=origin,
                     destination_iata=dest_iata,
                     destination_country_iso2=country_iso2,
-                    destination_airport_name=airport_name,
                     airline_name=airline_name,
                     airline_iata=airline_iata,
                     flights_per_day_min=fpd_min,
@@ -428,7 +425,7 @@ def parse_rows(html: str, origin: str) -> List[Row]:
         dest_iata = m.group(1)
 
         strong = a.select_one("strong")
-        dest_country_iso2, dest_airport_name = extract_country_and_airport_from_flag(wrapper)
+        dest_country_iso2, _dest_airport_name = extract_country_and_airport_from_flag(wrapper)
 
         airline_img = wrapper.select_one("div.ff-row-airline img.ff-image-airline")
         airline_name = (airline_img.get("alt") or "").strip() if airline_img else ""
@@ -453,7 +450,6 @@ def parse_rows(html: str, origin: str) -> List[Row]:
                 origin_iata=origin,
                 destination_iata=dest_iata,
                 destination_country_iso2=dest_country_iso2,
-                destination_airport_name=dest_airport_name,
                 airline_name=airline_name,
                 airline_iata=airline_iata,
                 flights_per_day_min=fpd_min,
@@ -481,13 +477,22 @@ def dedupe_rows(rows: List[Row]) -> List[Row]:
     return list(uniq.values())
 
 
+def setup_request_blocking(ctx) -> None:
+    def handle_route(route, request):
+        if request.resource_type in ("image", "media", "font", "stylesheet"):
+            route.abort()
+        else:
+            route.continue_()
+
+    ctx.route("**/*", handle_route)
+
+
 def rows_to_csv(rows: List[Row]) -> str:
     out = io.StringIO()
     fieldnames = [
         "origin_iata",
         "destination_iata",
         "destination_country_iso2",
-        "destination_airport_name",
         "airline_name",
         "airline_iata",
         "flights_per_day_min",
@@ -509,7 +514,6 @@ def rows_to_csv(rows: List[Row]) -> str:
                 "origin_iata": r.origin_iata,
                 "destination_iata": r.destination_iata,
                 "destination_country_iso2": r.destination_country_iso2,
-                "destination_airport_name": r.destination_airport_name,
                 "airline_name": r.airline_name,
                 "airline_iata": r.airline_iata,
                 "flights_per_day_min": "" if r.flights_per_day_min is None else r.flights_per_day_min,
@@ -551,6 +555,7 @@ def main() -> int:
 
         for airport in airports:
             ctx = browser.new_context(user_agent=UA, locale="en-US")
+            setup_request_blocking(ctx)
             page = ctx.new_page()
             try:
                 html = fetch_rendered_html(page, airport)
