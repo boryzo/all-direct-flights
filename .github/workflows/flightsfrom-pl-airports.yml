@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "0 9 */7 * *"
 
+permissions:
+  contents: write
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -17,7 +20,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install Python deps
         run: |
@@ -29,6 +32,7 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Scrape airports -> CSV
+        continue-on-error: true
         env:
           AIRPORTS: "GDN,LCJ,BZG,WAW,IEG,WMI,SZY,RDO,KRK,KTW,LUZ,WRO,POZ,SZZ,RZE"  # dostosuj listę
         run: |
