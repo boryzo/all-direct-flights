@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import json
 import os
 import re
 import sys
@@ -25,6 +26,8 @@ WAIT_MS = 25000
 CLOUDFLARE_RETRIES = 6
 CLOUDFLARE_WAIT_MS = 2000
 WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+WEEKDAY_FROM_DAY_FLAGS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+WEEKDAY_TO_NUMBER = {"Mon": 1, "Tue": 2, "Wed": 3, "Thu": 4, "Fri": 5, "Sat": 6, "Sun": 7}
 
 
 def is_cloudflare_challenge(page) -> bool:
@@ -69,6 +72,41 @@ def expand_show_more_routes(page) -> None:
         page.wait_for_timeout(1200)
 
 
+def scroll_until_routes_loaded(page) -> None:
+    last_count = 0
+    stable_rounds = 0
+    for _ in range(18):
+        count = page.evaluate("() => document.querySelectorAll('div.ff-wrapper').length")
+        if count > last_count:
+            last_count = count
+            stable_rounds = 0
+        else:
+            stable_rounds += 1
+        page.mouse.wheel(0, 8000)
+        page.wait_for_timeout(700)
+        if stable_rounds >= 3:
+            break
+
+
+def compress_day_numbers(days: List[int]) -> str:
+    if not days:
+        return ""
+    days = sorted(set(days))
+    ranges = []
+    start = prev = days[0]
+    for day in days[1:]:
+        if day == prev + 1:
+            prev = day
+            continue
+        ranges.append((start, prev))
+        start = prev = day
+    ranges.append((start, prev))
+    parts = []
+    for start, end in ranges:
+        parts.append(f"{start}-{end}" if start != end else f"{start}")
+    return ",".join(parts)
+
+
 def parse_weekday_availability(wrapper: BeautifulSoup) -> Tuple[str, str]:
     days_active = []
     days_blocked = []
@@ -86,16 +124,18 @@ def parse_weekday_availability(wrapper: BeautifulSoup) -> Tuple[str, str]:
             disabled = "disabled" in classes.split()
         else:
             disabled = "disabled" in classes
-        (days_blocked if disabled else days_active).append(weekday)
+        num = WEEKDAY_TO_NUMBER.get(weekday)
+        if num is None:
+            continue
+        (days_blocked if disabled else days_active).append(num)
 
-    return ",".join(days_active), ",".join(days_blocked)
+    return compress_day_numbers(days_active), compress_day_numbers(days_blocked)
 
 
 @dataclass
 class Row:
     origin_iata: str
     destination_iata: str
-    destination_city: str
     destination_country_iso2: str
     destination_airport_name: str
 
@@ -130,6 +170,14 @@ def parse_flights_per_day(text: str) -> Tuple[Optional[int], Optional[int]]:
     if m:
         return int(m.group(1)), int(m.group(2))
 
+    m = re.search(r"(\d+)\s*-\s*(\d+)\s+flights?\b", t)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+
+    m = re.search(r"^(\d+)\s*-\s*(\d+)$", t)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+
     m = re.search(r"(\d+)\s+flight\s+per\s+day", t)
     if m:
         x = int(m.group(1))
@@ -140,7 +188,35 @@ def parse_flights_per_day(text: str) -> Tuple[Optional[int], Optional[int]]:
         x = int(m.group(1))
         return x, x
 
+    m = re.search(r"(\d+)\s+flight\b", t)
+    if m:
+        x = int(m.group(1))
+        return x, x
+
+    m = re.search(r"(\d+)\s+flights\b", t)
+    if m:
+        x = int(m.group(1))
+        return x, x
+
+    m = re.search(r"^(\d+)$", t)
+    if m:
+        x = int(m.group(1))
+        return x, x
+
     return None, None
+
+
+def normalize_flights_per_day_raw(text: str) -> str:
+    t = (text or "").strip().lower()
+    if not t:
+        return ""
+    m = re.search(r"(\d+)\s*-\s*(\d+)\s+flights?\b", t)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    m = re.search(r"(\d+)\s+flights?\b", t)
+    if m:
+        return m.group(1)
+    return text.strip()
 
 
 def parse_duration_minutes(text: str) -> Optional[int]:
@@ -170,6 +246,17 @@ def extract_airline_iata_from_logo(url: str) -> str:
     return m.group(1) if m else ""
 
 
+def normalize_path(url: str) -> str:
+    if not url:
+        return ""
+    if url.startswith("http"):
+        parts = url.split("://", 1)[-1].split("/", 1)
+        if len(parts) == 2:
+            return parts[1]
+        return ""
+    return url.lstrip("/")
+
+
 def extract_country_and_airport_from_flag(wrapper: BeautifulSoup) -> Tuple[str, str]:
     img = wrapper.select_one("img.flag-image[uk-tooltip]")
     if not img:
@@ -181,6 +268,130 @@ def extract_country_and_airport_from_flag(wrapper: BeautifulSoup) -> Tuple[str, 
     return m.group(1), m.group(2).strip()
 
 
+def extract_all_destinations(html: str) -> Optional[list]:
+    marker = "allDestinations:"
+    idx = html.find(marker)
+    if idx == -1:
+        return None
+    start = html.find("[", idx)
+    if start == -1:
+        return None
+    in_str = False
+    esc = False
+    depth = 0
+    end = None
+    for i in range(start, len(html)):
+        ch = html[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+    if end is None:
+        return None
+    raw = html[start:end]
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def parse_weekdays_from_flags(dest: dict) -> Tuple[str, str]:
+    days_active = []
+    days_blocked = []
+    for idx, name in enumerate(WEEKDAY_FROM_DAY_FLAGS, start=1):
+        flag = dest.get(f"day{idx}")
+        if flag in ("yes", "upcoming"):
+            days_active.append(WEEKDAY_TO_NUMBER[name])
+        else:
+            days_blocked.append(WEEKDAY_TO_NUMBER[name])
+    return compress_day_numbers(days_active), compress_day_numbers(days_blocked)
+
+
+def rows_from_all_destinations(data: list, origin: str) -> List[Row]:
+    scraped_at = now_iso()
+    rows: List[Row] = []
+    for dest in data:
+        if dest.get("iata_from") != origin:
+            continue
+        airport = dest.get("airport") or {}
+        dest_iata = dest.get("iata_to") or ""
+        country_iso2 = airport.get("country_code") or ""
+        airport_name = airport.get("name") or ""
+        flights_raw = normalize_flights_per_day_raw(dest.get("flights_per_day") or "")
+        fpd_min, fpd_max = parse_flights_per_day(flights_raw)
+        duration_minutes = dest.get("common_duration") or None
+        duration_raw = f"{duration_minutes}m" if duration_minutes else ""
+        operating_days, blocked_days = parse_weekdays_from_flags(dest)
+
+        airlineroutes = dest.get("airlineroutes") or []
+        if not airlineroutes:
+            rows.append(
+                Row(
+                    origin_iata=origin,
+                    destination_iata=dest_iata,
+                    destination_country_iso2=country_iso2,
+                    destination_airport_name=airport_name,
+                    airline_name="",
+                    airline_iata="",
+                    flights_per_day_min=fpd_min,
+                    flights_per_day_max=fpd_max,
+                    flights_per_day_raw=flights_raw,
+                    duration_minutes=duration_minutes,
+                    duration_raw=duration_raw,
+                    operating_days=operating_days,
+                    blocked_days=blocked_days,
+                    airline_logo_url="",
+                    route_url=f"https://www.flightsfrom.com/{origin}-{dest_iata}",
+                    scraped_at=scraped_at,
+                )
+            )
+            continue
+
+        for route in airlineroutes:
+            airline = route.get("airline") or {}
+            airline_iata = airline.get("IATA") or route.get("carrier") or ""
+            airline_name = airline.get("name") or route.get("carrier_name") or ""
+            airline_logo_url = (
+                f"airlines/100/{airline_iata}_100px.png" if airline_iata else ""
+            )
+
+            rows.append(
+                Row(
+                    origin_iata=origin,
+                    destination_iata=dest_iata,
+                    destination_country_iso2=country_iso2,
+                    destination_airport_name=airport_name,
+                    airline_name=airline_name,
+                    airline_iata=airline_iata,
+                    flights_per_day_min=fpd_min,
+                    flights_per_day_max=fpd_max,
+                    flights_per_day_raw=flights_raw,
+                    duration_minutes=duration_minutes,
+                    duration_raw=duration_raw,
+                    operating_days=operating_days,
+                    blocked_days=blocked_days,
+                    airline_logo_url=airline_logo_url,
+                    route_url=f"{origin}-{dest_iata}",
+                    scraped_at=scraped_at,
+                )
+            )
+
+    return rows
+
+
 def fetch_rendered_html(page, airport_iata: str) -> str:
     url = f"https://www.flightsfrom.com/{airport_iata}"
     page.goto(url, wait_until="domcontentloaded")
@@ -188,9 +399,7 @@ def fetch_rendered_html(page, airport_iata: str) -> str:
     wait_for_route_list(page, airport_iata)
 
     # scroll — na wypadek lazy-load
-    for _ in range(7):
-        page.mouse.wheel(0, 8000)
-        page.wait_for_timeout(600)
+    scroll_until_routes_loaded(page)
 
     expand_show_more_routes(page)
 
@@ -198,6 +407,11 @@ def fetch_rendered_html(page, airport_iata: str) -> str:
 
 
 def parse_rows(html: str, origin: str) -> List[Row]:
+    data = extract_all_destinations(html)
+    if data:
+        rows = rows_from_all_destinations(data, origin)
+        return dedupe_rows(rows)
+
     soup = BeautifulSoup(html, "lxml")
     scraped_at = now_iso()
     rows: List[Row] = []
@@ -214,17 +428,19 @@ def parse_rows(html: str, origin: str) -> List[Row]:
         dest_iata = m.group(1)
 
         strong = a.select_one("strong")
-        city = strong.get_text(strip=True) if strong else ""
-
         dest_country_iso2, dest_airport_name = extract_country_and_airport_from_flag(wrapper)
 
         airline_img = wrapper.select_one("div.ff-row-airline img.ff-image-airline")
         airline_name = (airline_img.get("alt") or "").strip() if airline_img else ""
-        airline_logo_url = (airline_img.get("src") or "").strip() if airline_img else ""
+        airline_logo_url = normalize_path(
+            (airline_img.get("src") or "").strip() if airline_img else ""
+        )
         airline_iata = extract_airline_iata_from_logo(airline_logo_url)
 
         fpd_el = wrapper.select_one(".ff-flights-daily, .ff-flights-daily-desktop")
-        flights_per_day_raw = fpd_el.get_text(" ", strip=True) if fpd_el else ""
+        flights_per_day_raw = normalize_flights_per_day_raw(
+            fpd_el.get_text(" ", strip=True) if fpd_el else ""
+        )
         fpd_min, fpd_max = parse_flights_per_day(flights_per_day_raw)
 
         dur_el = wrapper.select_one(".ff-row-durationnr, .ff-row-text-durationnr, .ff-row-duration span")
@@ -236,7 +452,6 @@ def parse_rows(html: str, origin: str) -> List[Row]:
             Row(
                 origin_iata=origin,
                 destination_iata=dest_iata,
-                destination_city=city,
                 destination_country_iso2=dest_country_iso2,
                 destination_airport_name=dest_airport_name,
                 airline_name=airline_name,
@@ -249,17 +464,20 @@ def parse_rows(html: str, origin: str) -> List[Row]:
                 operating_days=operating_days,
                 blocked_days=blocked_days,
                 airline_logo_url=airline_logo_url,
-                route_url="https://www.flightsfrom.com" + href,
+                route_url=f"{origin}-{dest_iata}",
                 scraped_at=scraped_at,
             )
         )
 
+    return dedupe_rows(rows)
+
+
+def dedupe_rows(rows: List[Row]) -> List[Row]:
     # dedupe (origin, dest, airline)
     uniq = {}
     for r in rows:
         key = (r.origin_iata, r.destination_iata, r.airline_iata or r.airline_name)
         uniq[key] = r
-
     return list(uniq.values())
 
 
@@ -268,7 +486,6 @@ def rows_to_csv(rows: List[Row]) -> str:
     fieldnames = [
         "origin_iata",
         "destination_iata",
-        "destination_city",
         "destination_country_iso2",
         "destination_airport_name",
         "airline_name",
@@ -291,7 +508,6 @@ def rows_to_csv(rows: List[Row]) -> str:
             {
                 "origin_iata": r.origin_iata,
                 "destination_iata": r.destination_iata,
-                "destination_city": r.destination_city,
                 "destination_country_iso2": r.destination_country_iso2,
                 "destination_airport_name": r.destination_airport_name,
                 "airline_name": r.airline_name,

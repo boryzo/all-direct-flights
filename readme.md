@@ -39,21 +39,20 @@ Each CSV uses the following columns (in order):
 
 1. `origin_iata`
 2. `destination_iata`
-3. `destination_city`
-4. `destination_country_iso2`
-5. `destination_airport_name`
-6. `airline_name`
-7. `airline_iata`
-8. `flights_per_day_min`
-9. `flights_per_day_max`
-10. `duration_minutes`
-11. `route_url`
-12. `scraped_at` (UTC ISO timestamp)
-13. `flights_per_day_raw`
-14. `duration_raw`
-15. `operating_days` (comma-separated `Sun`..`Sat` masks showing when flights run)
-16. `blocked_days` (comma-separated weekdays without scheduled flights; blank when the route serves every day)
-17. `airline_logo_url`
+3. `destination_country_iso2`
+4. `destination_airport_name`
+5. `airline_name`
+6. `airline_iata`
+7. `flights_per_day_min`
+8. `flights_per_day_max`
+9. `duration_minutes`
+10. `route_url`
+11. `scraped_at` (UTC ISO timestamp)
+12. `flights_per_day_raw`
+13. `duration_raw`
+14. `operating_days` (comma-separated numeric ranges for Mon=1 .. Sun=7, e.g. `1-5` or `1-7`)
+15. `blocked_days` (same numeric encoding for days without scheduled flights; blank when the route serves every day)
+16. `airline_logo_url`
 
 The rows are sorted by destination IATA, then airline code/name, and the scraper deduplicates on `(origin, destination, airline)` to keep the latest view of each pair.
 
