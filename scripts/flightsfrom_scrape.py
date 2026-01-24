@@ -54,6 +54,21 @@ def wait_for_route_list(page, airport: str) -> None:
     raise PlaywrightTimeoutError(f"timeout waiting for routes for {airport}")
 
 
+def expand_show_more_routes(page) -> None:
+    for _ in range(5):
+        try:
+            button = page.wait_for_selector("#show-more-routes", timeout=2000)
+        except PlaywrightTimeoutError:
+            return
+        if not button.is_visible():
+            return
+        try:
+            button.click()
+        except PlaywrightTimeoutError:
+            return
+        page.wait_for_timeout(1200)
+
+
 def parse_weekday_availability(wrapper: BeautifulSoup) -> Tuple[str, str]:
     days_active = []
     days_blocked = []
@@ -176,6 +191,8 @@ def fetch_rendered_html(page, airport_iata: str) -> str:
     for _ in range(7):
         page.mouse.wheel(0, 8000)
         page.wait_for_timeout(600)
+
+    expand_show_more_routes(page)
 
     return page.content()
 
