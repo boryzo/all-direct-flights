@@ -3,7 +3,7 @@ name: flightsfrom - polish airports to CSV
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 4 */2 * *"  # co drugiego dnia o 04:00 UTC (06:00 CET)
+    - cron: "0 9 */7 * *"
 
 jobs:
   scrape:
