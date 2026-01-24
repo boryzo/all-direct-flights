@@ -8,7 +8,7 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -30,10 +30,21 @@ jobs:
 
       - name: Scrape airports -> CSV
         env:
-          AIRPORTS: "GDN,WAW,KRK,KTW,WRO,POZ,SZZ,LUZ,RZE,IEG,LCJ,BZG,WMI,SZY,RDO"  # dostosuj listę
+          AIRPORTS: "GDN,LCJ,BZG,WAW,IEG,WMI,SZY,RDO,KRK,KTW,LUZ,WRO,POZ,SZZ,RZE"  # dostosuj listę
         run: |
           rm -rf out
-          python scripts/flightsfrom_scrape.py --airports "${AIRPORTS}" --out-dir out
+          IFS=',' read -r -a airport_list <<< "${AIRPORTS}"
+          pids=()
+          for ((i=0; i<${#airport_list[@]}; i+=3)); do
+            batch="$(IFS=','; echo "${airport_list[*]:i:3}")"
+            python scripts/flightsfrom_scrape.py --airports "${batch}" --out-dir out &
+            pids+=($!)
+            if [ "${#pids[@]}" -ge 3 ]; then
+              wait -n
+              pids=($(jobs -p))
+            fi
+          done
+          wait
           ls -la out
 
       - name: Ensure csv-latest release exists
