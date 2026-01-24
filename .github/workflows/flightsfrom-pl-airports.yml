@@ -2,8 +2,8 @@ name: flightsfrom - polish airports to CSV
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "15 3 * * *"  # codziennie 03:15 UTC (04:15 w PL zimą)
+  schedule:
+    - cron: "0 4 */2 * *"  # co drugiego dnia o 04:00 UTC (06:00 CET)
 
 jobs:
   scrape:
@@ -30,15 +30,24 @@ jobs:
 
       - name: Scrape airports -> CSV
         env:
-          AIRPORTS: "GDN,WAW,KRK,KTW,WRO,POZ,SZZ,LUZ,RZE,IEG,LCJ,BZG,OLS"  # dostosuj listę
+          AIRPORTS: "GDN,WAW,KRK,KTW,WRO,POZ,SZZ,LUZ,RZE,IEG,LCJ,BZG,WMI,SZY,RDO"  # dostosuj listę
         run: |
           rm -rf out
           python scripts/flightsfrom_scrape.py --airports "${AIRPORTS}" --out-dir out
           ls -la out
 
-      - name: Upload CSV artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: flightsfrom-pl-airports-csv
-          path: out/
-          if-no-files-found: error
+      - name: Ensure csv-latest release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view csv-latest >/dev/null 2>&1; then
+            gh release create csv-latest --title "CSV Latest" --notes "Daily direct-flight CSV" --target "${GITHUB_SHA}"
+          fi
+
+      - name: Publish CSVs as release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for file in out/*.csv; do
+            gh release upload csv-latest "$file" --clobber
+          done

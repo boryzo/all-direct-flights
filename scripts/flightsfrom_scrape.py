@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 
 UA = (
@@ -22,6 +22,58 @@ UA = (
 )
 
 WAIT_MS = 25000
+CLOUDFLARE_RETRIES = 6
+CLOUDFLARE_WAIT_MS = 2000
+WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+
+def is_cloudflare_challenge(page) -> bool:
+    title = (page.title() or "").strip().lower()
+    url = (page.url or "").lower()
+    if "just a moment" in title or "checking your browser" in title:
+        return True
+    return "/cdn-cgi/" in url
+
+
+def wait_for_route_list(page, airport: str) -> None:
+    attempts = 0
+    last_exc: Optional[PlaywrightTimeoutError] = None
+    while attempts < CLOUDFLARE_RETRIES:
+        try:
+            page.wait_for_selector(".ff-wrapper", timeout=WAIT_MS)
+            page.wait_for_selector(f'a[href^="/{airport}-"]', timeout=WAIT_MS)
+            return
+        except PlaywrightTimeoutError as exc:
+            last_exc = exc
+            if not is_cloudflare_challenge(page):
+                raise
+            attempts += 1
+            page.wait_for_timeout(CLOUDFLARE_WAIT_MS)
+    if last_exc:
+        raise last_exc
+    raise PlaywrightTimeoutError(f"timeout waiting for routes for {airport}")
+
+
+def parse_weekday_availability(wrapper: BeautifulSoup) -> Tuple[str, str]:
+    days_active = []
+    days_blocked = []
+    els = wrapper.select(".flightsfrom-list-days")
+    for idx, day_el in enumerate(els[: len(WEEKDAY_SHORT)]):
+        if not day_el:
+            continue
+        text = (day_el.get_text(strip=True) or "").strip()
+        if not text:
+            continue
+        weekday = WEEKDAY_SHORT[idx]
+        disabled = False
+        classes = day_el.get("class", [])
+        if isinstance(classes, str):
+            disabled = "disabled" in classes.split()
+        else:
+            disabled = "disabled" in classes
+        (days_blocked if disabled else days_active).append(weekday)
+
+    return ",".join(days_active), ",".join(days_blocked)
 
 
 @dataclass
@@ -41,6 +93,9 @@ class Row:
 
     duration_minutes: Optional[int]
     duration_raw: str
+
+    operating_days: str
+    blocked_days: str
 
     airline_logo_url: str
     route_url: str
@@ -115,9 +170,7 @@ def fetch_rendered_html(page, airport_iata: str) -> str:
     url = f"https://www.flightsfrom.com/{airport_iata}"
     page.goto(url, wait_until="domcontentloaded")
 
-    # czekamy aż lista tras się pojawi
-    page.wait_for_selector(".ff-wrapper", timeout=WAIT_MS)
-    page.wait_for_selector(f'a[href^="/{airport_iata}-"]', timeout=WAIT_MS)
+    wait_for_route_list(page, airport_iata)
 
     # scroll — na wypadek lazy-load
     for _ in range(7):
@@ -160,6 +213,7 @@ def parse_rows(html: str, origin: str) -> List[Row]:
         dur_el = wrapper.select_one(".ff-row-durationnr, .ff-row-text-durationnr, .ff-row-duration span")
         duration_raw = dur_el.get_text(" ", strip=True) if dur_el else ""
         duration_minutes = parse_duration_minutes(duration_raw)
+        operating_days, blocked_days = parse_weekday_availability(wrapper)
 
         rows.append(
             Row(
@@ -175,6 +229,8 @@ def parse_rows(html: str, origin: str) -> List[Row]:
                 flights_per_day_raw=flights_per_day_raw,
                 duration_minutes=duration_minutes,
                 duration_raw=duration_raw,
+                operating_days=operating_days,
+                blocked_days=blocked_days,
                 airline_logo_url=airline_logo_url,
                 route_url="https://www.flightsfrom.com" + href,
                 scraped_at=scraped_at,
@@ -207,6 +263,8 @@ def rows_to_csv(rows: List[Row]) -> str:
         "scraped_at",
         "flights_per_day_raw",
         "duration_raw",
+        "operating_days",
+        "blocked_days",
         "airline_logo_url",
     ]
     w = csv.DictWriter(out, fieldnames=fieldnames)
@@ -228,6 +286,8 @@ def rows_to_csv(rows: List[Row]) -> str:
                 "scraped_at": r.scraped_at,
                 "flights_per_day_raw": r.flights_per_day_raw,
                 "duration_raw": r.duration_raw,
+                "operating_days": r.operating_days,
+                "blocked_days": r.blocked_days,
                 "airline_logo_url": r.airline_logo_url,
             }
         )
@@ -255,10 +315,10 @@ def main() -> int:
     # Playwright: jedna przeglądarka, jedna strona, wiele lotnisk (szybciej i stabilniej)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(user_agent=UA, locale="en-US")
-        page = ctx.new_page()
 
         for airport in airports:
+            ctx = browser.new_context(user_agent=UA, locale="en-US")
+            page = ctx.new_page()
             try:
                 html = fetch_rendered_html(page, airport)
                 rows = parse_rows(html, airport)
@@ -271,8 +331,10 @@ def main() -> int:
                 # Nie wywracaj całej paczki, ale sygnalizuj błąd kodem wyjścia
                 # (na końcu zsumujemy statusy)
                 (out_dir / f"{airport}.error.txt").write_text(str(e), encoding="utf-8")
+            finally:
+                page.close()
+                ctx.close()
 
-        ctx.close()
         browser.close()
 
     # jeśli są error.txt, zwróć 2
